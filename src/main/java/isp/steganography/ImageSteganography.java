@@ -1,5 +1,9 @@
 package isp.steganography;
 
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
 import javax.imageio.ImageIO;
 import java.awt.*;
 import java.awt.image.BufferedImage;
@@ -35,18 +39,19 @@ public class ImageSteganography {
 
         /*
         TODO: Assignment 1
-        */
         ImageSteganography.encode(payload, "images/1_Kyoto.png", "images/steganogram.png");
         final byte[] decoded1 = ImageSteganography.decode("images/steganogram.png");
         System.out.printf("Decoded: %s%n", new String(decoded1, "UTF-8"));
+        */
 
         /*
         TODO: Assignment 2
+        */
         final SecretKey key = KeyGenerator.getInstance("AES").generateKey();
-        ImageSteganography.encryptAndEncode(payload, "images/2_Morondava.png", "images/steganogram-encrypted.png", key);
-        final byte[] decoded2 = ImageSteganography.decryptAndDecode("images/steganogram-encrypted.png", key);
+        final byte[] iv = ImageSteganography.encryptAndEncode(payload, "images/2_Morondava.png", "images/steganogram-encrypted.png", key);
+        final byte[] decoded2 = ImageSteganography.decryptAndDecode("images/steganogram-encrypted.png", key, iv);
 
-        System.out.printf("Decoded: %s%n", new String(decoded2, "UTF-8")); */
+        System.out.printf("Decoded: %s%n", new String(decoded2, "UTF-8")); 
     }
 
     /**
@@ -104,9 +109,13 @@ public class ImageSteganography {
      * @param key     symmetric secret key
      * @throws Exception
      */
-    public static void encryptAndEncode(final byte[] pt, final String inFile, final String outFile, final Key key)
+    public static byte[] encryptAndEncode(final byte[] pt, final String inFile, final String outFile, final Key key)
             throws Exception {
-        // TODO
+        final Cipher encrypt = Cipher.getInstance("AES/GCM/NoPadding");
+        encrypt.init(Cipher.ENCRYPT_MODE, key);
+        final byte[] ct = encrypt.doFinal(pt);
+        ImageSteganography.encode(ct, inFile, outFile);
+        return encrypt.getIV();
     }
 
     /**
@@ -117,9 +126,13 @@ public class ImageSteganography {
      * @return plaintext of the decoded message
      * @throws Exception
      */
-    public static byte[] decryptAndDecode(final String fileName, final Key key) throws Exception {
-        // TODO
-        return null;
+    public static byte[] decryptAndDecode(final String fileName, final Key key, final byte[] iv) throws Exception {
+        final byte[] ct = ImageSteganography.decode(fileName);
+
+        final Cipher decrypt = Cipher.getInstance("AES/GCM/NoPadding");
+        final GCMParameterSpec specs = new GCMParameterSpec(128, iv);
+        decrypt.init(Cipher.DECRYPT_MODE, key, specs);
+        return decrypt.doFinal(ct);
     }
 
     /**
