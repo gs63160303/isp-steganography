@@ -2,6 +2,7 @@ package isp.steganography;
 
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
+import javax.crypto.Mac;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.imageio.ImageIO;
@@ -11,20 +12,21 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.security.InvalidKeyException;
 import java.security.Key;
+import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.BitSet;
 
 /**
  * Assignments:
  * <p>
- * 1. Change the encoding process, so that the first 4 bytes of the steganogram hold the
- * length of the payload. Then modify the decoding process accordingly.
- * 2. Add security: Provide secrecy and integrity for the hidden message. Use GCM for cipher.
- * Also, use AEAD to provide integrity to the steganogram size.
- * 3. Optional: Enhance the capacity of the carrier:
- * -- Use the remaining two color channels;
- * -- Use additional bits.
+ * 1. Change the encoding process, so that the first 4 bytes of the steganogram
+ * hold the length of the payload. Then modify the decoding process accordingly.
+ * 2. Add security: Provide secrecy and integrity for the hidden message. Use
+ * GCM for cipher. Also, use AEAD to provide integrity to the steganogram size.
+ * 3. Optional: Enhance the capacity of the carrier: -- Use the remaining two
+ * color channels; -- Use additional bits.
  */
 public class ImageSteganography {
 
@@ -32,26 +34,32 @@ public class ImageSteganography {
         final byte[] payload = "My secret message".getBytes(StandardCharsets.UTF_8);
 
         /*
-        ImageSteganography.encode0(payload, "images/1_Kyoto.png", "images/steganogram.png");
-        final byte[] decoded = ImageSteganography.decode0("images/steganogram.png", payload.length);
-        System.out.printf("Decoded: %s%n", new String(decoded, StandardCharsets.UTF_8));
-        */
+         * ImageSteganography.encode0(payload, "images/1_Kyoto.png",
+         * "images/steganogram.png"); final byte[] decoded =
+         * ImageSteganography.decode0("images/steganogram.png", payload.length);
+         * System.out.printf("Decoded: %s%n", new String(decoded,
+         * StandardCharsets.UTF_8));
+         */
 
         /*
-        TODO: Assignment 1
-        ImageSteganography.encode(payload, "images/1_Kyoto.png", "images/steganogram.png");
-        final byte[] decoded1 = ImageSteganography.decode("images/steganogram.png");
-        System.out.printf("Decoded: %s%n", new String(decoded1, "UTF-8"));
-        */
+         * TODO: Assignment 1 ImageSteganography.encode(payload, "images/1_Kyoto.png",
+         * "images/steganogram.png"); final byte[] decoded1 =
+         * ImageSteganography.decode("images/steganogram.png");
+         * System.out.printf("Decoded: %s%n", new String(decoded1, "UTF-8"));
+         */
 
         /*
-        TODO: Assignment 2
-        */
+         * TODO: Assignment 2
+         */
+        final Key keyHMAC = KeyGenerator.getInstance("HmacSHA256").generateKey();
         final SecretKey key = KeyGenerator.getInstance("AES").generateKey();
-        final byte[] iv = ImageSteganography.encryptAndEncode(payload, "images/2_Morondava.png", "images/steganogram-encrypted.png", key);
-        final byte[] decoded2 = ImageSteganography.decryptAndDecode("images/steganogram-encrypted.png", key, iv);
+        final byte[][] r = ImageSteganography.encryptAndEncode(payload, "images/2_Morondava.png",
+                "images/steganogram-encrypted.png", key, keyHMAC);
+        final byte[] iv = r[0], tagLength = r[1];
+        final byte[] decoded2 = ImageSteganography.decryptAndDecode("images/steganogram-encrypted.png", key, iv,
+                keyHMAC, tagLength);
 
-        System.out.printf("Decoded: %s%n", new String(decoded2, "UTF-8")); 
+        System.out.printf("Decoded: %s%n", new String(decoded2, "UTF-8"));
     }
 
     /**
@@ -60,15 +68,24 @@ public class ImageSteganography {
      * @param pt      The payload to be encoded
      * @param inFile  The filename of the cover image
      * @param outFile The filename of the steganogram
-     * @throws IOException If the file does not exist, or the saving fails.
+     * @throws IOException              If the file does not exist, or the saving
+     *                                  fails.
+     * @throws NoSuchAlgorithmException
+     * @throws InvalidKeyException
      */
-    public static void encode(final byte[] pt, final String inFile, final String outFile) throws IOException {
+    public static byte[] encode(final byte[] pt, final String inFile, final String outFile, final Key keyHMAC)
+            throws IOException, NoSuchAlgorithmException, InvalidKeyException {
         // load the image
         final BufferedImage image = loadImage(inFile);
 
+        final int steganogramLength = pt.length;
+        final Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(keyHMAC);
+        final byte[] tagLength = mac.doFinal(ByteBuffer.allocate(4).putInt(steganogramLength).array());        
+
         // Convert byte array to bit sequence
         final byte[] paddedPlaintext = ByteBuffer.allocate(4 + pt.length)
-            .putInt(pt.length)
+            .putInt(steganogramLength)
             .put(pt)
             .array();
         final BitSet bits = BitSet.valueOf(paddedPlaintext);
@@ -78,6 +95,8 @@ public class ImageSteganography {
 
         // save the modified image into outFile
         saveImage(outFile, image);
+
+        return tagLength;
     }
 
     /**
@@ -85,14 +104,14 @@ public class ImageSteganography {
      *
      * @param fileName The name of the file
      * @return The byte array of the decoded message
-     * @throws IOException If the filename does not exist.
+     * @throws Exception
      */
-    public static byte[] decode(final String fileName) throws IOException {
+    public static byte[] decode(final String fileName, final Key keyHMAC, final byte[] tagLength) throws Exception {
         // load the image
         final BufferedImage image = loadImage(fileName);
 
         // read all LSBs
-        final BitSet bits = decodeBits(image);
+        final BitSet bits = decodeBits(image, keyHMAC, tagLength);
 
         // convert them to bytes
         final byte[] bytes = bits.toByteArray();
@@ -109,13 +128,15 @@ public class ImageSteganography {
      * @param key     symmetric secret key
      * @throws Exception
      */
-    public static byte[] encryptAndEncode(final byte[] pt, final String inFile, final String outFile, final Key key)
+    public static byte[][] encryptAndEncode(final byte[] pt, final String inFile, final String outFile, final Key key, final Key keyHMAC)
             throws Exception {
         final Cipher encrypt = Cipher.getInstance("AES/GCM/NoPadding");
         encrypt.init(Cipher.ENCRYPT_MODE, key);
         final byte[] ct = encrypt.doFinal(pt);
-        ImageSteganography.encode(ct, inFile, outFile);
-        return encrypt.getIV();
+        return new byte[][] {
+            encrypt.getIV(),
+            ImageSteganography.encode(ct, inFile, outFile, keyHMAC)
+        };
     }
 
     /**
@@ -126,8 +147,8 @@ public class ImageSteganography {
      * @return plaintext of the decoded message
      * @throws Exception
      */
-    public static byte[] decryptAndDecode(final String fileName, final Key key, final byte[] iv) throws Exception {
-        final byte[] ct = ImageSteganography.decode(fileName);
+    public static byte[] decryptAndDecode(final String fileName, final Key key, final byte[] iv, final Key keyHMAC, final byte[] tagLength) throws Exception {
+        final byte[] ct = ImageSteganography.decode(fileName, keyHMAC, tagLength);
 
         final Cipher decrypt = Cipher.getInstance("AES/GCM/NoPadding");
         final GCMParameterSpec specs = new GCMParameterSpec(128, iv);
@@ -194,8 +215,10 @@ public class ImageSteganography {
      * @param image steganogram
      * @param size  the size of the encoded steganogram
      * @return {@link BitSet} instance representing the sequence of read bits
+     * @throws Exception
      */
-    protected static BitSet decodeBits(final BufferedImage image) {
+    protected static BitSet decodeBits(final BufferedImage image, final Key keyHMAC, final byte[] tagLength)
+            throws Exception {
         final BitSet bits = new BitSet();
         int sizeBits = 32;
 
@@ -207,11 +230,39 @@ public class ImageSteganography {
                 bitCounter++;
 
                 if (bitCounter == 32) {
-                    sizeBits += 8 * ByteBuffer.wrap(bits.toByteArray()).getInt();
+                    final int len = ByteBuffer.wrap(bits.toByteArray()).getInt();
+
+
+
+                    final Mac mac = Mac.getInstance("HmacSHA256");
+                    mac.init(keyHMAC);
+                    final byte[] tag = mac.doFinal(ByteBuffer.allocate(4).putInt(len).array());
+
+                    if (!verify(tag, tagLength, keyHMAC)) {
+                        throw new Exception("Length was modified!");
+                    }
+
+                    sizeBits += 8 * len;
                 }
             }
         }
 
         return bits;
+    }
+
+    public static boolean verify(byte[] tag1, byte[] tag2, Key key)
+            throws NoSuchAlgorithmException, InvalidKeyException {
+        /*
+            FIXME: Defense #2
+            The idea is to hide which bytes are actually being compared
+            by MAC-ing the tags once more and then comparing those tags
+         */
+        final Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(key);
+
+        final byte[] tagtag1 = mac.doFinal(tag1);
+        final byte[] tagtag2 = mac.doFinal(tag2);
+
+        return Arrays.equals(tagtag1, tagtag2);
     }
 }
